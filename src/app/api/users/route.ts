@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { createClient as createSupabaseClient } from '@supabase/supabase-js'
+import type { Database } from '@/types/database.types'
 import { z } from 'zod'
 
 const updateUserSchema = z.object({
@@ -9,6 +11,25 @@ const updateUserSchema = z.object({
   locale: z.string().optional(),
   profileData: z.record(z.string(), z.unknown()).optional(),
 })
+
+// Service role client for API operations
+const getSupabaseService = () => {
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!serviceKey || serviceKey === 'your_service_role_key_here') {
+    console.warn('Service role key not configured, falling back to user context')
+    return null
+  }
+  return createSupabaseClient<Database>(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    serviceKey,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    }
+  )
+}
 
 async function getAuthenticatedUser(request: NextRequest) {
   const authorization = request.headers.get('authorization')
@@ -23,8 +44,9 @@ async function getAuthenticatedUser(request: NextRequest) {
     return null
   }
 
-  // Get user profile
-  const { data: profile } = await supabase
+  // Get user profile using service client to bypass RLS
+  const serviceClient = getSupabaseService() || supabase
+  const { data: profile } = await serviceClient
     .from('users')
     .select('*')
     .eq('id', user.id)
@@ -49,14 +71,16 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
-    let query = supabase
+    // Use service client to bypass RLS
+    const serviceClient = getSupabaseService() || supabase
+    let query = serviceClient
       .from('users')
       .select('id, email, first_name, last_name, role, avatar_url, locale, created_at, updated_at')
 
     // Filter based on user role and access
     if (user.role === 'coach') {
       // Coaches can only see their athletes
-      const { data: links } = await supabase
+      const { data: links } = await serviceClient
         .from('coach_athlete_links')
         .select('athlete_id')
         .eq('coach_id', user.id)
@@ -70,7 +94,7 @@ export async function GET(request: NextRequest) {
       }
     } else if (user.role === 'athlete') {
       // Athletes can only see themselves and their coaches
-      const { data: links } = await supabase
+      const { data: links } = await serviceClient
         .from('coach_athlete_links')
         .select('coach_id')
         .eq('athlete_id', user.id)
@@ -142,7 +166,9 @@ export async function PUT(request: NextRequest) {
     if (locale !== undefined) updateData.locale = locale
     if (profileData !== undefined) updateData.profile_data = profileData
 
-    const { data, error } = await supabase
+    // Use service client to bypass RLS
+    const serviceClient = getSupabaseService() || supabase
+    const { data, error } = await serviceClient
       .from('users')
       .update(updateData)
       .eq('id', userId)
