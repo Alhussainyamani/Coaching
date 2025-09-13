@@ -68,8 +68,8 @@ export async function GET(request: NextRequest) {
       .from('threads')
       .select(`
         *,
-        coach:coach_id(id, first_name, last_name, email, avatar_url),
-        athlete:athlete_id(id, first_name, last_name, email, avatar_url)
+        coach:users!threads_coach_id_fkey(id, first_name, last_name, email, avatar_url, role, created_at, updated_at),
+        athlete:users!threads_athlete_id_fkey(id, first_name, last_name, email, avatar_url, role, created_at, updated_at)
       `)
 
     // Filter based on user role

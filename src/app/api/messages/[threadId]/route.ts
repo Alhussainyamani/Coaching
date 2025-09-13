@@ -154,6 +154,19 @@ export async function POST(
 
     const { threadId } = await params
     const body = await request.json()
+    console.log('📤 DEBUG: Received message data:', body)
+    
+    try {
+      const { text, attachments } = sendMessageSchema.parse(body)
+      console.log('✅ DEBUG: Schema validation passed:', { text, attachments })
+    } catch (error) {
+      console.log('🚨 DEBUG: Schema validation failed:', error)
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.message },
+        { status: 400 }
+      )
+    }
+    
     const { text, attachments } = sendMessageSchema.parse(body)
 
     if (!text && (!attachments || attachments.length === 0)) {

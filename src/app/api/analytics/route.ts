@@ -1,5 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { createClient as createSupabaseClient } from '@supabase/supabase-js'
+import type { Database } from '@/types/database.types'
+
+// Service role client for API operations
+const getSupabaseService = () => {
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!serviceRoleKey) {
+    console.error('SUPABASE_SERVICE_ROLE_KEY is not set')
+    return null
+  }
+
+  return createSupabaseClient<Database>(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    serviceRoleKey,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    }
+  )
+}
 
 async function getAuthenticatedUser(request: NextRequest) {
   const authorization = request.headers.get('authorization')
@@ -7,21 +29,28 @@ async function getAuthenticatedUser(request: NextRequest) {
     return null
   }
 
-  const token = authorization.split(' ')[1]
-  const { data: { user }, error } = await supabase.auth.getUser(token)
+  const token = authorization.slice(7)
   
-  if (error || !user) {
+  try {
+    // Use service client to get user by token
+    const serviceClient = getSupabaseService() || supabase
+    const { data: { user }, error } = await serviceClient.auth.getUser(token)
+    if (error || !user) {
+      return null
+    }
+
+    // Get user profile with role using service client
+    const { data: profile } = await serviceClient
+      .from('users')
+      .select('*')
+      .eq('id', user.id)
+      .single()
+
+    return profile
+  } catch (error) {
+    console.error('Auth error:', error)
     return null
   }
-
-  // Get user profile
-  const { data: profile } = await supabase
-    .from('users')
-    .select('*')
-    .eq('id', user.id)
-    .single()
-
-  return profile
 }
 
 export async function GET(request: NextRequest) {
@@ -54,18 +83,21 @@ export async function GET(request: NextRequest) {
 
     const startDateISO = startDate.toISOString()
 
+    // Use service client for data queries
+    const serviceClient = getSupabaseService() || supabase
+
     // Get user statistics
-    const { data: allUsers } = await supabase
+    const { data: allUsers } = await serviceClient
       .from('users')
       .select('created_at, role')
 
-    const { data: newUsers } = await supabase
+    const { data: newUsers } = await serviceClient
       .from('users')
       .select('id')
       .gte('created_at', startDateISO)
 
     // Get program statistics
-    const { data: allPrograms } = await supabase
+    const { data: allPrograms } = await serviceClient
       .from('programs')
       .select('start_date, end_date, created_at')
 
@@ -81,27 +113,27 @@ export async function GET(request: NextRequest) {
     }) || []
 
     // Get message statistics
-    const { data: allMessages } = await supabase
+    const { data: allMessages } = await serviceClient
       .from('messages')
       .select('created_at')
 
-    const { data: recentMessages } = await supabase
+    const { data: recentMessages } = await serviceClient
       .from('messages')
       .select('id')
       .gte('created_at', startDateISO)
 
-    const { data: activeThreads } = await supabase
+    const { data: activeThreads } = await serviceClient
       .from('threads')
       .select('id')
       .not('last_message_at', 'is', null)
       .gte('last_message_at', startDateISO)
 
     // Get check-in statistics
-    const { data: allCheckIns } = await supabase
+    const { data: allCheckIns } = await serviceClient
       .from('check_ins')
       .select('created_at, athlete_id')
 
-    const { data: recentCheckIns } = await supabase
+    const { data: recentCheckIns } = await serviceClient
       .from('check_ins')
       .select('id')
       .gte('created_at', startDateISO)

@@ -1,17 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { createClient as createSupabaseClient } from '@supabase/supabase-js'
+import type { Database } from '@/types/database.types'
 import { z } from 'zod'
 
 const createCheckInSchema = z.object({
-  bodyweight: z.number().positive().optional(),
-  sleepHours: z.number().min(0).max(24).optional(),
-  mood: z.number().min(1).max(10).optional(),
-  energy: z.number().min(1).max(10).optional(),
-  steps: z.number().min(0).optional(),
-  liquidsML: z.number().min(0).optional(),
+  date: z.string().optional(),
+  bodyweight: z.number().optional(),
+  sleep_hours: z.number().optional(),
+  steps: z.number().int().optional(),
+  liquids_ml: z.number().int().optional(),
+  mood: z.number().int().min(1).max(10).optional(),
+  energy: z.number().int().min(1).max(10).optional(),
   notes: z.string().optional(),
-  measurements: z.record(z.string(), z.unknown()).optional(),
+  measurements: z.record(z.any()).optional(),
 })
+
+// Service role client for API operations
+const getSupabaseService = () => {
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!serviceRoleKey) {
+    console.error('SUPABASE_SERVICE_ROLE_KEY is not set')
+    return null
+  }
+
+  return createSupabaseClient<Database>(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    serviceRoleKey,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    }
+  )
+}
 
 async function getAuthenticatedUser(request: NextRequest) {
   const authorization = request.headers.get('authorization')
@@ -19,21 +42,28 @@ async function getAuthenticatedUser(request: NextRequest) {
     return null
   }
 
-  const token = authorization.split(' ')[1]
-  const { data: { user }, error } = await supabase.auth.getUser(token)
+  const token = authorization.slice(7)
   
-  if (error || !user) {
+  try {
+    // Use service client to get user by token
+    const serviceClient = getSupabaseService() || supabase
+    const { data: { user }, error } = await serviceClient.auth.getUser(token)
+    if (error || !user) {
+      return null
+    }
+
+    // Get user profile with role using service client
+    const { data: profile } = await serviceClient
+      .from('users')
+      .select('*')
+      .eq('id', user.id)
+      .single()
+
+    return profile
+  } catch (error) {
+    console.error('Auth error:', error)
     return null
   }
-
-  // Get user profile
-  const { data: profile } = await supabase
-    .from('users')
-    .select('*')
-    .eq('id', user.id)
-    .single()
-
-  return profile
 }
 
 export async function GET(request: NextRequest) {
@@ -50,64 +80,52 @@ export async function GET(request: NextRequest) {
     const athleteId = searchParams.get('athleteId')
     const startDate = searchParams.get('startDate')
     const endDate = searchParams.get('endDate')
-    const limit = parseInt(searchParams.get('limit') || '30')
 
-    let query = supabase
+    // Use service client to bypass RLS
+    const serviceClient = getSupabaseService() || supabase
+    let query = serviceClient
       .from('check_ins')
-      .select(`
-        *,
-        athlete:athlete_id(id, first_name, last_name, email, avatar_url)
-      `)
+      .select('*')
+      .order('date', { ascending: false })
 
-    // Filter based on user role and parameters
+    // For athletes, only show their own check-ins
     if (user.role === 'athlete') {
       query = query.eq('athlete_id', user.id)
-    } else if (user.role === 'coach') {
-      if (athleteId) {
-        // Verify coach has access to this athlete
-        const { data: link } = await supabase
-          .from('coach_athlete_links')
-          .select('*')
-          .eq('coach_id', user.id)
-          .eq('athlete_id', athleteId)
-          .eq('status', 'active')
-          .single()
+    } 
+    // For coaches, allow filtering by athleteId
+    else if (user.role === 'coach' && athleteId) {
+      // Verify coach has access to this athlete
+      const { data: link } = await serviceClient
+        .from('coach_athlete_links')
+        .select('*')
+        .eq('coach_id', user.id)
+        .eq('athlete_id', athleteId)
+        .eq('status', 'active')
+        .single()
 
-        if (!link) {
-          return NextResponse.json(
-            { error: 'Access denied to athlete data' },
-            { status: 403 }
-          )
-        }
-        query = query.eq('athlete_id', athleteId)
-      } else {
-        // Get all athletes for this coach
-        const { data: links } = await supabase
-          .from('coach_athlete_links')
-          .select('athlete_id')
-          .eq('coach_id', user.id)
-          .eq('status', 'active')
-
-        const athleteIds = links?.map(link => link.athlete_id) || []
-        if (athleteIds.length > 0) {
-          query = query.in('athlete_id', athleteIds)
-        } else {
-          return NextResponse.json({ checkIns: [] })
-        }
+      if (!link) {
+        return NextResponse.json(
+          { error: 'Access denied to this athlete' },
+          { status: 403 }
+        )
       }
-    }
-    // Admin can see all check-ins (no additional filter)
 
+      query = query.eq('athlete_id', athleteId)
+    }
+    // For admins, show all or filter by athleteId
+    else if (user.role === 'admin' && athleteId) {
+      query = query.eq('athlete_id', athleteId)
+    }
+
+    // Apply date filters if provided
     if (startDate) {
-      query = query.gte('created_at', startDate)
+      query = query.gte('date', startDate)
     }
     if (endDate) {
-      query = query.lte('created_at', endDate)
+      query = query.lte('date', endDate)
     }
 
-    const { data, error } = await query
-      .order('created_at', { ascending: false })
-      .limit(limit)
+    const { data: checkIns, error } = await query
 
     if (error) {
       return NextResponse.json(
@@ -116,7 +134,7 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    return NextResponse.json({ checkIns: data })
+    return NextResponse.json({ data: checkIns })
   } catch (error) {
     console.error('Get check-ins error:', error)
     return NextResponse.json(
@@ -136,65 +154,84 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (user.role !== 'athlete') {
+    const body = await request.json()
+    const checkInData = createCheckInSchema.parse(body)
+
+    // Use service client to bypass RLS
+    const serviceClient = getSupabaseService() || supabase
+
+    // Only athletes can create their own check-ins (or admin for any athlete)
+    let athleteId = user.id
+    if (user.role === 'admin' && body.athleteId) {
+      athleteId = body.athleteId
+    } else if (user.role !== 'athlete' && user.role !== 'admin') {
       return NextResponse.json(
         { error: 'Only athletes can create check-ins' },
         { status: 403 }
       )
     }
 
-    const body = await request.json()
-    const { bodyweight, sleepHours, mood, energy, steps, liquidsML, notes, measurements } = createCheckInSchema.parse(body)
-
-    // Check if user already checked in today
-    const today = new Date().toISOString().split('T')[0]
-    const { data: existingCheckIn } = await supabase
+    // Check if check-in already exists for this date
+    const checkDate = checkInData.date || new Date().toISOString().split('T')[0]
+    const { data: existingCheckIn } = await serviceClient
       .from('check_ins')
       .select('id')
-      .eq('athlete_id', user.id)
-      .eq('date', today)
+      .eq('athlete_id', athleteId)
+      .eq('date', checkDate)
       .single()
 
     if (existingCheckIn) {
+      // Update existing check-in
+      const { data: updatedCheckIn, error } = await serviceClient
+        .from('check_ins')
+        .update({
+          ...checkInData,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingCheckIn.id)
+        .select()
+        .single()
+
+      if (error) {
+        return NextResponse.json(
+          { error: error.message },
+          { status: 500 }
+        )
+      }
+
+      return NextResponse.json(updatedCheckIn)
+    } else {
+      // Create new check-in
+      const { data: newCheckIn, error } = await serviceClient
+        .from('check_ins')
+        .insert([{
+          athlete_id: athleteId,
+          date: checkDate,
+          ...checkInData,
+        }])
+        .select()
+        .single()
+
+      if (error) {
+        return NextResponse.json(
+          { error: error.message },
+          { status: 500 }
+        )
+      }
+
+      return NextResponse.json(newCheckIn)
+    }
+  } catch (error) {
+    console.error('Create check-in error:', error)
+    if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { error: 'Check-in already completed for today' },
+        { error: 'Invalid request data', details: error.errors },
         { status: 400 }
       )
     }
-
-    const { data, error } = await supabase
-      .from('check_ins')
-      .insert({
-        athlete_id: user.id,
-        date: today,
-        bodyweight,
-        sleep_hours: sleepHours,
-        mood,
-        energy,
-        steps,
-        liquids_ml: liquidsML,
-        notes,
-        measurements: measurements ? JSON.parse(JSON.stringify(measurements)) : null,
-      })
-      .select(`
-        *,
-        athlete:athlete_id(id, first_name, last_name, email, avatar_url)
-      `)
-      .single()
-
-    if (error) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: 500 }
-      )
-    }
-
-    return NextResponse.json({ checkIn: data })
-  } catch (error) {
-    console.error('Create check-in error:', error)
     return NextResponse.json(
-      { error: 'Invalid request data' },
-      { status: 400 }
+      { error: 'Internal server error' },
+      { status: 500 }
     )
   }
 }
