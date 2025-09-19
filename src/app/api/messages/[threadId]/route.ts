@@ -5,7 +5,7 @@ import type { Database } from '@/types/database.types'
 import { z } from 'zod'
 
 const sendMessageSchema = z.object({
-  text: z.string().optional(),
+  text: z.string().nullable().optional(),
   attachments: z.array(z.object({
     type: z.enum(['image', 'video', 'file']),
     storage_path: z.string(),
@@ -202,7 +202,7 @@ export async function POST(
     }
 
     // Create message
-    const { data: message, error } = await serviceClient
+    let { data: message, error } = await serviceClient
       .from('messages')
       .insert({
         thread_id: threadId,
@@ -211,13 +211,14 @@ export async function POST(
       })
       .select(`
         *,
-        sender:sender_id(id, first_name, last_name, email, avatar_url)
+        sender:sender_id(id, first_name, last_name, email, avatar_url),
+        attachments:message_attachments(*)
       `)
       .single()
 
-    if (error) {
+    if (error || !message) {
       return NextResponse.json(
-        { error: error.message },
+        { error: error?.message || 'Failed to create message' },
         { status: 500 }
       )
     }
@@ -225,7 +226,7 @@ export async function POST(
     // Create attachments if provided
     if (attachments && attachments.length > 0) {
       const attachmentData = attachments.map(attachment => ({
-        message_id: message.id,
+        message_id: message!.id,
         storage_path: attachment.storage_path,
         file_name: attachment.file_name,
         file_size: attachment.file_size,
@@ -241,6 +242,21 @@ export async function POST(
       if (attachmentError) {
         console.error('Attachment creation error:', attachmentError)
         // Don't fail the message creation, just log the error
+      } else {
+        // Re-fetch the message with attachments to return complete data
+        const { data: messageWithAttachments } = await serviceClient
+          .from('messages')
+          .select(`
+            *,
+            sender:sender_id(id, first_name, last_name, email, avatar_url),
+            attachments:message_attachments(*)
+          `)
+          .eq('id', message!.id)
+          .single()
+        
+        if (messageWithAttachments) {
+          message = messageWithAttachments
+        }
       }
     }
 
