@@ -64,7 +64,8 @@ export async function GET(request: NextRequest) {
 
     // Use service client to bypass RLS
     const serviceClient = getSupabaseService() || supabase
-    let query = serviceClient
+    // First get threads
+    let threadsQuery = serviceClient
       .from('threads')
       .select(`
         *,
@@ -74,13 +75,13 @@ export async function GET(request: NextRequest) {
 
     // Filter based on user role
     if (user.role === 'athlete') {
-      query = query.eq('athlete_id', user.id)
+      threadsQuery = threadsQuery.eq('athlete_id', user.id)
     } else if (user.role === 'coach') {
-      query = query.eq('coach_id', user.id)
+      threadsQuery = threadsQuery.eq('coach_id', user.id)
     }
     // Admin can see all threads (no additional filter)
 
-    const { data: threads, error } = await query.order('last_message_at', { ascending: false, nullsFirst: false })
+    const { data: threads, error } = await threadsQuery.order('last_message_at', { ascending: false, nullsFirst: false })
 
     if (error) {
       return NextResponse.json(
@@ -89,24 +90,29 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Get latest message for each thread
-    const threadsWithMessages = await Promise.all(
+    // Fetch latest message for each thread
+    const threadsWithLatestMessage = await Promise.all(
       (threads || []).map(async (thread) => {
-        const { data: messages } = await serviceClient
+        const { data: latestMessages } = await serviceClient
           .from('messages')
-          .select('id, text, sender_id, created_at, attachments')
+          .select(`
+            id, text, created_at, sender_id,
+            sender:users!messages_sender_id_fkey(id, first_name, last_name, email, avatar_url)
+          `)
           .eq('thread_id', thread.id)
           .order('created_at', { ascending: false })
           .limit(1)
+        
+        const latestMessage = latestMessages && latestMessages.length > 0 ? latestMessages[0] : null
 
         return {
           ...thread,
-          latest_message: messages?.[0] || null
+          latest_message: latestMessage || null
         }
       })
     )
 
-    return NextResponse.json({ data: threadsWithMessages })
+    return NextResponse.json({ data: threadsWithLatestMessage })
   } catch (error) {
     console.error('Get threads error:', error)
     return NextResponse.json(

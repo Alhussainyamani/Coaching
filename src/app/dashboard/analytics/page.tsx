@@ -20,7 +20,9 @@ import {
   Activity,
   BarChart3,
   PieChart,
-  Download
+  Download,
+  FileText,
+  Filter,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
@@ -56,10 +58,72 @@ export default function AnalyticsPage() {
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [timeframe, setTimeframe] = useState('30d')
+  const [reportType, setReportType] = useState('users')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [exporting, setExporting] = useState(false)
 
   useEffect(() => {
     fetchAnalytics()
   }, [timeframe])
+
+  const handleExport = async (format: 'csv' | 'json') => {
+    setExporting(true)
+    try {
+      const { data: session } = await supabase.auth.getSession()
+      if (!session.session) {
+        toast.error('Please log in to export data')
+        return
+      }
+
+      const params = new URLSearchParams({
+        type: reportType,
+        format,
+        ...(startDate && { startDate }),
+        ...(endDate && { endDate })
+      })
+
+      const response = await fetch(`/api/analytics/export?${params}`, {
+        headers: {
+          'Authorization': `Bearer ${session.session.access_token}`
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error('Export failed')
+      }
+
+      if (format === 'csv') {
+        const blob = await response.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${reportType}_export_${new Date().toISOString().split('T')[0]}.csv`
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
+        toast.success('CSV export downloaded successfully')
+      } else {
+        const data = await response.json()
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${reportType}_export_${new Date().toISOString().split('T')[0]}.json`
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
+        toast.success('JSON export downloaded successfully')
+      }
+    } catch (error) {
+      console.error('Export error:', error)
+      toast.error('Failed to export data')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const fetchAnalytics = async () => {
     setLoading(true)
@@ -434,6 +498,120 @@ export default function AnalyticsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Advanced Reporting Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <FileText className="h-5 w-5 mr-2" />
+            Advanced Reporting & Data Export
+          </CardTitle>
+          <CardDescription>
+            Generate custom reports and export data for detailed analysis
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-6">
+            {/* Report Configuration */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">
+                  Report Type
+                </label>
+                <Select value={reportType} onValueChange={setReportType}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select report type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="users">Users Report</SelectItem>
+                    <SelectItem value="checkins">Check-ins Report</SelectItem>
+                    <SelectItem value="programs">Programs Report</SelectItem>
+                    <SelectItem value="messages">Messages Report</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div>
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">
+                  Start Date
+                </label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                />
+              </div>
+              
+              <div>
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">
+                  End Date
+                </label>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                />
+              </div>
+            </div>
+
+            {/* Export Actions */}
+            <div className="flex flex-wrap gap-3">
+              <Button
+                onClick={() => handleExport('csv')}
+                disabled={exporting}
+                variant="outline"
+                className="flex items-center"
+              >
+                <Download className="h-4 w-4 mr-2" />
+                {exporting ? 'Exporting...' : 'Export CSV'}
+              </Button>
+              
+              <Button
+                onClick={() => handleExport('json')}
+                disabled={exporting}
+                variant="outline"
+                className="flex items-center"
+              >
+                <Download className="h-4 w-4 mr-2" />
+                {exporting ? 'Exporting...' : 'Export JSON'}
+              </Button>
+              
+              <Button
+                onClick={() => {
+                  setStartDate('')
+                  setEndDate('')
+                  setReportType('users')
+                }}
+                variant="ghost"
+                className="flex items-center"
+              >
+                <Filter className="h-4 w-4 mr-2" />
+                Clear Filters
+              </Button>
+            </div>
+
+            {/* Quick Stats for Selected Report */}
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+              <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                {reportType.charAt(0).toUpperCase() + reportType.slice(1)} Report Preview
+              </h4>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                {reportType === 'users' && 'Export all user accounts with registration dates, roles, and profile information.'}
+                {reportType === 'checkins' && 'Export athlete check-in data including weight, sleep, mood, and compliance metrics.'}
+                {reportType === 'programs' && 'Export training programs with assignments, completion status, and timeline data.'}
+                {reportType === 'messages' && 'Export messaging data for communication analysis and engagement metrics.'}
+              </p>
+              {(startDate || endDate) && (
+                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                  Date range: {startDate || 'All time'} to {endDate || 'Present'}
+                </p>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

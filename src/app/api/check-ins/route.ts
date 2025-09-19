@@ -13,7 +13,7 @@ const createCheckInSchema = z.object({
   mood: z.number().int().min(1).max(10).optional(),
   energy: z.number().int().min(1).max(10).optional(),
   notes: z.string().optional(),
-  measurements: z.record(z.any()).optional(),
+  measurements: z.record(z.string(), z.any()).optional(),
 })
 
 // Service role client for API operations
@@ -225,7 +225,7 @@ export async function POST(request: NextRequest) {
     console.error('Create check-in error:', error)
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { error: 'Invalid request data', details: error.errors },
+        { error: 'Invalid request data', details: error.issues },
         { status: 400 }
       )
     }

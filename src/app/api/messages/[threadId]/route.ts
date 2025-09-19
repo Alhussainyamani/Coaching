@@ -13,7 +13,7 @@ const sendMessageSchema = z.object({
     file_size: z.number().optional(),
     mime_type: z.string().optional(),
     duration_seconds: z.number().optional(),
-  })).optional(),
+  })).nullable().default([]),
 })
 
 // Service role client for API operations
@@ -162,14 +162,15 @@ export async function POST(
     } catch (error) {
       console.log('🚨 DEBUG: Schema validation failed:', error)
       return NextResponse.json(
-        { error: 'Invalid request data', details: error.message },
+        { error: 'Invalid request data', details: error instanceof Error ? error.message : String(error) },
         { status: 400 }
       )
     }
     
     const { text, attachments } = sendMessageSchema.parse(body)
 
-    if (!text && (!attachments || attachments.length === 0)) {
+    // A message must have either text OR attachments (or both)
+    if ((!text || text.trim().length === 0) && (!attachments || attachments.length === 0)) {
       return NextResponse.json(
         { error: 'Message must have text or attachments' },
         { status: 400 }
